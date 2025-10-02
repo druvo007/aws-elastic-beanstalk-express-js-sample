@@ -1,80 +1,75 @@
-// Jenkinsfile
+// Jenkinsfile (Declarative Pipeline)
+
 pipeline {
-    // ----------------------------------------------------
-    // AGENT (Required: Use Node 16 Docker image)
-    // ----------------------------------------------------
+    // 1. Define the build agent using the required Node 16 Docker image [cite: 78]
     agent {
         docker {
-            image 'node:16-slim' // Required image as the build agent
-            label 'jenkins-agent'
-            args '-u root'
+            image 'node:16'
+            // Using -u root often prevents permission issues with npm install
+            args '-u root' 
         }
     }
 
     environment {
-        // --- UPDATED WITH YOUR DOCKER ID ---
-        DOCKER_REGISTRY = 'druva007' // Your DockerHub Username
-        // -----------------------------------
-        IMAGE_NAME = "express-sample-app"
+        // Define the image name using the student's Docker Hub ID
+        IMAGE_NAME = "druva007/node-web-app" // Updated with druva007
+        // Assign the BUILD_NUMBER as the image tag
         IMAGE_TAG = "${env.BUILD_NUMBER}"
+        FULL_IMAGE = "${IMAGE_NAME}:${IMAGE_TAG}"
     }
 
     stages {
-        stage('Initialize & Dependencies') {
+        // Stage 1: Install Dependencies and Run Tests
+        stage('Build & Test') {
             steps {
-                echo "Installing Node dependencies..."
-                // Required step: Install dependencies
-                sh 'npm install' 
-            }
-        }
-
-        stage('Unit Tests') {
-            steps {
-                echo "Running unit tests..."
-                // Required step: Run unit tests
+                echo 'Installing dependencies...'
+                // Install dependencies [cite: 79]
+                sh 'npm install --save' 
+                
+                echo 'Running unit tests...'
+                // Run unit tests [cite: 80]
+                // Requires the application's package.json to have a 'test' script
                 sh 'npm test' 
             }
         }
         
-        // ----------------------------------------------------------------------------------
-        // Security in the Pipeline (10 Marks)
-        // ----------------------------------------------------------------------------------
-        stage('Dependency Vulnerability Scan') {
+        // Stage 2: Security Scan [cite: 81]
+        stage('Dependency Scan (Snyk)') {
             steps {
-                echo "Scanning for dependency vulnerabilities (Snyk CLI)..."
+                echo 'Installing Snyk CLI and running vulnerability scan...'
                 
-                // Integrate a dependency vulnerability scanner (e.g., Snyk CLI)
-                // Requires a Jenkins Secret Text credential named 'SNYK_TOKEN'.
+                // Install Snyk CLI globally in the agent container
+                sh 'npm install -g snyk'
                 
-                withCredentials([string(credentialsId: 'SNYK_TOKEN', variable: 'SNYK_AUTH_TOKEN')]) {
-                    sh "snyk auth ${SNYK_AUTH_TOKEN}"
-                    
-                    // The pipeline must fail if High/Critical issues are detected.
-                    sh 'snyk test --json --severity-threshold=high || (if [ $? -ge 2 ]; then exit 1; fi)'
+                // Integrate a dependency vulnerability scanner (Snyk) [cite: 82]
+                withCredentials([string(credentialsId: 'SNYK_API_TOKEN', variable: 'SNYK_TOKEN')]) {
+                    sh "snyk auth \$SNYK_TOKEN"
+                    // The '--fail-on=high' argument ensures the pipeline fails if High/Critical issues are detected [cite: 83]
+                    // We use '|| true' to capture the error, but the exit code must still be non-zero for Jenkins to fail.
+                    // Snyk CLI exits with non-zero if issues are found, satisfying the requirement[cite: 83].
+                    sh 'snyk test --fail-on=high || (echo "Snyk found high/critical issues, failing build." && exit 1)' 
                 }
-            }
-        }
-        // ----------------------------------------------------------------------------------
-        
-        stage('Build Docker Image') {
-            steps {
-                echo "Building application Docker image..."
-                // Required step: Build a Docker image of the app
-                sh "docker build -t ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} ."
-                sh "docker tag ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest"
+                echo 'Dependency scan complete. Proceeding only if no High/Critical issues found.'
             }
         }
 
-        stage('Push to Registry') {
+        // Stage 3: Docker Build and Push
+        stage('Docker Build & Push') {
             steps {
-                echo "Pushing image to DockerHub..."
-                // Required step: Push to your registry
-                // Requires a Jenkins Username/Password credential named 'dockerhub-credentials'.
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', passwordVariable: 'DOCKER_PASSWORD', usernameVariable: 'DOCKER_USER')]) {
-                    sh "docker login -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}"
-                    sh "docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" 
-                    sh "docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest"
-                    sh "docker logout"
+                script {
+                    // 1. Build a Docker image of the app [cite: 80]
+                    echo "Building Docker image: ${env.FULL_IMAGE}"
+                    // Assumes a Dockerfile exists in the app root
+                    sh "docker build -t ${env.FULL_IMAGE} ." 
+
+                    // 2. Push to your registry (DockerHub) [cite: 80]
+                    // Use Jenkins username/password credentials for Docker Hub
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
+                        sh "docker login -u \$USER -p \$PASS"
+                        sh "docker push ${env.FULL_IMAGE}"
+                        sh "docker logout" // Clean up login session
+                    }
+                    echo "Pushed Docker image: ${env.FULL_IMAGE}"
                 }
             }
         }
